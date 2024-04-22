@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.5)
+
+project(lm75_iio C)
+
+include (ExternalProject)
+
+ExternalProject_Add(${PROJECT_NAME}
+	SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+	DOWNLOAD_COMMAND cp -dpRf ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/
+	CONFIGURE_COMMAND ""
+	BUILD_COMMAND $(MAKE) -C ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME} CROSS_COMPILE=${TOOLCHAIN_DIR}/bin/${TOOLCHAIN_NAME}- ARCH=${KERNEL_ARCH} KERNEL_HEADERS_DIR=${KERNELHEADERS_DIR}
+        INSTALL_COMMAND mkdir -p ${FAKEROOT_DIR}/lib/modules/${KERNEL_VERSION}/kernel/drivers/iio/temperature/ && cp -dpRf ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}/${PROJECT_NAME}.ko ${FAKEROOT_DIR}/lib/modules/${KERNEL_VERSION}/kernel/drivers/iio/temperature/
+	DEPENDS ${MODULE_DEPENDS}
+)
+
+ExternalProject_Add_Step(${PROJECT_NAME} add_module_to_fakeroot
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${FAKEROOT_DIR}/lib/modules/${KERNEL_VERSION}/kernel/drivers/iio/temperature
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}/${PROJECT_NAME}.ko ${FAKEROOT_DIR}/lib/modules/${KERNEL_VERSION}/kernel/drivers/iio/temperature
+    ALWAYS TRUE
+    DEPENDEES install)

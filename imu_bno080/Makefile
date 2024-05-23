@@ -4,7 +4,7 @@ imu_bno080-objs := bno080_core.o bno080_api.o bno080_i2c.o
 SRC := $(shell pwd)
 
 all:
-	$(MAKE) -C $(KERNEL_SRC) M=$(SRC) KBUILD_EXTRA_SYMBOLS=$(SRC)/../../recipe-sysroot/usr/include/ambarella-hwtimer/Module.symvers
+	$(MAKE) -C $(KERNEL_SRC) M=$(SRC) KBUILD_EXTRA_SYMBOLS=$(OCLEA_KBUILD_EXTRA_SYMBOLS)
 
 modules_install:
 	$(MAKE) -C $(KERNEL_SRC) M=$(SRC) modules_install

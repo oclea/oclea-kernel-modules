@@ -2,7 +2,6 @@
 #include <linux/kernel.h>
 #include <linux/nvmem-provider.h>
 #include <linux/slab.h>
-#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/list.h>
 #include <linux/fs.h>
@@ -24,7 +23,6 @@ MODULE_PARM_DESC(bin_dir, "Base path for EEPROM bin files");
 struct virtual_eeprom {
     struct nvmem_device *nvmem_dev;
     struct nvmem_config nvmem_cfg;
-    struct mutex mutex;
     int size;
     const char *name;
     char *bin_path;
@@ -47,7 +45,7 @@ static int eeprom_read(void *context, unsigned int offset, void *val, size_t byt
     loff_t pos = offset;
     ssize_t ret, total_read = 0;
 
-    if (offset >= eeprom->size)
+    if (!eeprom || offset >= eeprom->size)
         return -EINVAL;
 
     if (offset + bytes > eeprom->size) {
@@ -83,7 +81,7 @@ static int eeprom_write(void *context, unsigned int offset, void *val, size_t by
     loff_t pos = offset;
     ssize_t ret, total_written = 0;
 
-    if (offset >= eeprom->size)
+    if (!eeprom || offset >= eeprom->size)
         return -EINVAL;
 
     if (offset + bytes > eeprom->size) {
@@ -120,6 +118,10 @@ static int init_storage_file(struct virtual_eeprom *eeprom)
     struct kstat stat;
     char *zero_buffer;
     int ret;
+
+    if (!eeprom) {
+        return -EINVAL;
+    }
 
     // Check if bin file already exists
     ret = kern_path(eeprom->bin_path, LOOKUP_FOLLOW, &file_path);
@@ -176,7 +178,7 @@ static int __init eeprom_init(void)
     for_each_child_of_node(np, child) {
         const char *name = child->name;
         u32 size;
-        struct virtual_eeprom *eeprom;
+        struct virtual_eeprom *eeprom = NULL;
 
         if (of_property_read_u32(child, "size", &size)) {
             pr_err("Failed to read size for %s\n", name);
@@ -197,7 +199,6 @@ static int __init eeprom_init(void)
             continue;
         }
 
-        mutex_init(&eeprom->mutex);
         eeprom->size = size;
         eeprom->name = name;
 

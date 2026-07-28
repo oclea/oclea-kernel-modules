@@ -52,28 +52,23 @@ static int efm8_temperature_read_temp(void *dev, int *temp)
     return 0;
 }
 
-static int efm8_temperature_notify(struct thermal_zone_device *tzd, int temp,  enum thermal_trip_type type)
+static void efm8_temperature_critical(struct thermal_zone_device *tzd)
 {
     u16 wake_temp_dc;
 
     if (!notify_data) {
         printk("Warning! Missing thermal wakeup data");
-        return -1;
+        return;
     }
 
     if (notify_data->resume_temp_mc < 0) {
         // No resume temperature specified, MCU will use default
         printk("No resume temperature specified!");
-        return 0;
+        return;
     }
 
     wake_temp_dc = (u16)(notify_data->resume_temp_mc / 100);
-
-    if (THERMAL_TRIP_CRITICAL == type) {
-        return i2c_smbus_write_word_data(notify_data->client, OCLEA_TEMP_REG_CRITICAL, wake_temp_dc);
-    }
-
-    return 0;
+    i2c_smbus_write_word_data(notify_data->client, OCLEA_TEMP_REG_CRITICAL, wake_temp_dc);
 }
 
 static umode_t efm8_temperature_is_visible(const void *data, enum hwmon_sensor_types type,
@@ -208,13 +203,20 @@ static int efm8_temperature_probe(struct i2c_client *client,
                                                    dev_data,
                                                    &efm8_temperature_thermal_ops);
     if (IS_ERR(dev_data->tz)) {
-        dev_err(dev, "Failed to register thermal zone\n");
-        devm_hwmon_device_unregister(dev_data->hwmon_dev);
-        return PTR_ERR(dev_data->tz);
+        status = PTR_ERR(dev_data->tz);
+        if (status == -ENODEV) {
+            dev_data->tz = NULL;
+            dev_info(dev, "No thermal zone, continuing in hwmon-only mode\n");
+        } else {
+            dev_err(dev, "Failed to register thermal zone: %d\n", status);
+            return status;
+        }
     }
 
     notify_data = dev_data;
-    dev_data->tz->ops->notify = efm8_temperature_notify;
+    if (dev_data->tz) {
+        dev_data->tz->ops->critical = efm8_temperature_critical;
+    }
 
     dev_info(dev, "%s: sensor '%s'\n", dev_name(dev_data->hwmon_dev), client->name);
 
@@ -229,12 +231,12 @@ static int efm8_temperature_remove(struct i2c_client *client)
         return 0;
     }
 
-    if (temp_data->hwmon_dev) {
-        devm_hwmon_device_unregister(temp_data->hwmon_dev);
+    if (notify_data == temp_data) {
+        notify_data = NULL;
     }
 
     if (temp_data->tz) {
-        devm_thermal_zone_of_sensor_unregister(&client->dev, temp_data->tz);
+        thermal_zone_of_sensor_unregister(&client->dev, temp_data->tz);
     }
 
     return 0;

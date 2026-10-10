@@ -6,7 +6,7 @@
 #include <linux/interrupt.h>
 #include <linux/gpio.h>
 #include <linux/mutex.h>
-#include <linux/timer.h>
+#include <linux/workqueue.h>
 #include <linux/delay.h>
 #include <linux/delay.h>
 #include <linux/of.h>
@@ -19,15 +19,15 @@
 #define PYD1698_DETECT_IRQ_NAME "PIR Detect IRQ"
 
 #define PYD1698_TCLK_US 4       // clock time > 2 us
-#define PYD1698_SIN_TSLT_US 680 // data load time > 580 us
-#define PYD1698_SIN_TSHD_US 76  // data in hold time > 72 us
+#define PYD1698_SIN_TSLT_US 800 // data load time > 580 us (PYD1598: > 650 us)
+#define PYD1698_SIN_TSHD_US 100 // data in hold time > 72 us (PYD1598: >= 80 us)
 
 #define PYD1698_DL_TDS_FRC_US 120   // data set-up time > 110 ms for force mode
 #define PYD1698_DL_TDS_WU_US 80     // data set-up time > 75 ms for intr mode
 #define PYD1698_DL_TBS_US 10        // data bit settling time 2 us under Cload < 10pF
 #define PYD1698_DL_TBIT_US 22       // bit time < 22 us
 #define PYD1698_DL_TCL_US 145       // readout cancel time > 145 us
-#define PYD1698_DL_TRST_US 70       // > 35 ms
+#define PYD1698_DL_TRST_US 200      // DL reset low time (PYD1598: >= 160 us)
 
 #define PYD1698_THRESHOLD_DEFAULT 50    // [24:17] (0 .. 255)
 #define PYD1698_BLIND_TIME_DEFAULT 15   // [16:13] 0.5s + [Reg Val] * 0.5s - 8 seconds
@@ -87,7 +87,7 @@ struct pyd1698_data {
     int detected;
     struct mutex lock;
     int irq_number;
-    struct timer_list rst_timer;
+    struct delayed_work rst_work;
     int rst_time_ms;
 };
 
@@ -207,15 +207,10 @@ static int pyd1698_read_out(struct pyd1698_data *data)
 /*
  * Direct Link line reset timer handler
  */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,15,0)
-static void pyd1698_rst_timer_func(unsigned long p_data)
+/* Runs in process context: it takes the mutex and busy-waits on the DL line. */
+static void pyd1698_rst_work_func(struct work_struct *work)
 {
-    struct pyd1698_data *data = (struct pyd1698_data *) p_data;
-#else
-static void pyd1698_rst_timer_func(struct timer_list *t)
-{
-    struct pyd1698_data *data = from_timer(data, t, rst_timer);
-#endif
+    struct pyd1698_data *data = container_of(to_delayed_work(work), struct pyd1698_data, rst_work);
 
     gpio_direction_output(data->dl_gpio, 0);
     gpio_set_value(data->dl_gpio, 0);
@@ -237,7 +232,7 @@ static irqreturn_t pyd1698_gpio_interrupt_handler(int irq, void *irq_data)
     data->detected = 1;
     mutex_unlock(&data->lock);
 
-    mod_timer(&data->rst_timer, jiffies + data->rst_time_ms * (HZ / 1000));
+    mod_delayed_work(system_wq, &data->rst_work, msecs_to_jiffies(data->rst_time_ms));
     return IRQ_HANDLED;
 }
 
@@ -566,18 +561,12 @@ static int pyd1698_probe(struct platform_device *pdev)
 
     pyd1698_set_config(data);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,15,0)
-    init_timer(&data->rst_timer);
-    data->rst_timer.function = pyd1698_rst_timer_func;
-    data->rst_timer.data = (unsigned long) data;
-#else
-    timer_setup(&data->rst_timer, pyd1698_rst_timer_func, 0);
-#endif
-    data->rst_timer.expires = jiffies + HZ / 1000;
+    INIT_DELAYED_WORK(&data->rst_work, pyd1698_rst_work_func);
 
     data->irq_number = gpio_to_irq(data->dl_gpio);
-    rval = request_irq(data->irq_number, &pyd1698_gpio_interrupt_handler,
-        IRQF_TRIGGER_RISING, PYD1698_DETECT_IRQ_NAME, data);
+    /* Threaded: the handler takes a mutex. */
+    rval = request_threaded_irq(data->irq_number, NULL, &pyd1698_gpio_interrupt_handler,
+        IRQF_TRIGGER_RISING | IRQF_ONESHOT, PYD1698_DETECT_IRQ_NAME, data);
 
     if (rval < 0)
         return -EINVAL;
@@ -598,7 +587,7 @@ static int pyd1698_probe(struct platform_device *pdev)
     }
 
     dev_info(&pdev->dev, "%d channels\n", indio_dev->num_channels);
-    add_timer(&data->rst_timer);
+    schedule_delayed_work(&data->rst_work, msecs_to_jiffies(1));
     return 0;
 }
 
@@ -608,7 +597,7 @@ static int pyd1698_remove(struct platform_device *pdev)
     struct pyd1698_data *data = iio_priv(indio_dev);
 
     free_irq(data->irq_number, data);
-    del_timer(&data->rst_timer);
+    cancel_delayed_work_sync(&data->rst_work);
     iio_device_unregister(platform_get_drvdata(pdev));
     iio_device_free(indio_dev);
     return 0;
